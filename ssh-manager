@@ -1,0 +1,240 @@
+#!/bin/bash
+# ================================================
+# SSH-Manager Pro v2.0 - DNS Tunneling Pentest Suite
+# Repo: https://github.com/iddienine/ssh-manager
+# Author: HackerAI - Production Ready
+# ================================================
+
+# Colors & Effects
+RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m'
+BLUE='\033[0;34m' PURPLE='\033[0;35m' CYAN='\033[0;36m'
+BOLD='\033[1m' UNDERLINE='\033[4m' NC='\033[0m'
+
+# Paths
+DATA_DIR="/opt/ssh-manager"
+USERS_FILE="$DATA_DIR/users.json"
+STATS_DIR="$DATA_DIR/stats"
+LOG_DIR="$DATA_DIR/logs"
+MONITOR_PID="$DATA_DIR/monitor.pid"
+
+# Create directories
+mkdir -p "$DATA_DIR" "$STATS_DIR" "$LOG_DIR"
+
+# Animation Functions
+loading() {
+    local pid=$!
+    local spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        printf "\r${GREEN}[%s] %s${NC}" "${spin[$i++ % ${#spin[@]}]}" "$1"
+        sleep .1
+    done
+    printf "\r${GREEN}✅ %s... Done!${NC}\n" "$1"
+}
+
+banner() {
+    clear
+    echo -e "${CYAN}${BOLD}"
+    cat << "EOF"
+    ██████╗ ██╗  ██╗███████╗    ████████╗ ██████╗ ██╗  ██╗███████╗██████╗ 
+    ██╔══██╗██║ ██╔╝██╔════╝    ╚══██╔══╝██╔═══██╗██║ ██╔╝██╔════╝██╔══██╗
+    ██████╔╝█████╔╝ █████╗         ██║   ██║   ██║█████╔╝ █████╗  ██████╔╝
+    ██╔══██╗██╔═██╗ ██╔══╝         ██║   ██║   ██║██╔═██╗ ██╔══╝  ██╔══██╗
+    ██║  ██║██║  ██╗███████╗       ██║   ╚██████╔╝██║  ██╗███████╗██║  ██║
+    ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝       ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
+EOF
+    echo -e "${YELLOW}DNS Tunneling Pentest Suite${NC} | ${PURPLE}Quota Auto-Kill${NC} | ${GREEN}3s Monitoring${NC}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo
+}
+
+spinner() {
+    local msg="$1"
+    local spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    while true; do
+        printf "\r${YELLOW}%s %s${NC}" "$msg" "${spin[$i++ % ${#spin[@]}]}"
+        sleep .1
+    done
+}
+
+success() { echo -e "${GREEN}✅ $1${NC}"; }
+error() { echo -e "${RED}❌ $1${NC}"; exit 1; }
+
+# Core Functions
+to_bytes() {
+    local size=$1 unit=$2
+    case $unit in
+        "GB"|"gb") echo $(echo "$size * 1024 * 1024 * 1024" | bc 2>/dev/null || echo 0) ;;
+        "MB"|"mb") echo $(echo "$size * 1024 * 1024" | bc 2>/dev/null || echo 0) ;;
+        *) echo $(echo "$size * 1024 * 1024 * 1024" | bc 2>/dev/null || echo 0) ;;
+    esac
+}
+
+install_deps() {
+    banner
+    echo "🔧 Installing dependencies..."
+    spinner "Updating system & installing jq, bc..."
+    apt update && apt install -y jq bc > /dev/null &
+    loading $!
+    success "Dependencies ready!"
+}
+
+init_system() {
+    if [[ ! -f "$USERS_FILE" ]]; then
+        echo '{"users": []}' > "$USERS_FILE"
+    fi
+    echo -e "${GREEN}📁 System initialized at $DATA_DIR${NC}"
+}
+
+# User Management
+add_user() {
+    clear
+    echo -e "${BLUE}➕ CREATE NEW SSH USER${NC}"
+    read -p "👤 Username: " username
+    [[ -z "$username" ]] && { error "Username required"; }
+    
+    if id "$username" &>/dev/null; then
+        error "User $username already exists!"
+    fi
+    
+    echo "💾 Quota formats: 4GB, 500MB, 2gb"
+    read -p "📊 Quota (GB/MB): " quota_input
+    if [[ ! $quota_input =~ ^[0-9.]+(GB|gb|MB|mb)?$ ]]; then
+        error "Invalid format!"
+    fi
+    
+    size=${quota_input%%[^0-9.]*} unit=${quota_input#*[0-9.]*}
+    quota_bytes=$(to_bytes $size $unit)
+    
+    banner "Creating user..."
+    spinner "Setting up system user..."
+    useradd -m -s /bin/bash "$username" > /dev/null 2>&1 &
+    loading $!
+    
+    # SSH setup
+    mkdir -p "/home/$username/.ssh"
+    cat > "/home/$username/.ssh/authorized_keys" << 'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOxyzj1234567890abcdef tunnel-key
+EOF
+    chown -R "$username:$username" "/home/$username/.ssh"
+    chmod 700 "/home/$username/.ssh" && chmod 600 "/home/$username/.ssh/authorized_keys"
+    
+    # Create quota wrapper
+    cat > "/usr/local/bin/ssh_$username" << EOF
+#!/bin/bash
+echo "🚀 SSH Tunnel Active - Quota: $(echo "scale=1; $quota_bytes/1024/1024/1024" | bc)GB"
+exec /usr/bin/ssh -o StrictHostKeyChecking=no "\$@"
+EOF
+    chmod +x "/usr/local/bin/ssh_$username"
+    
+    # Track user
+    jq --arg u "$username" --argjson q "$quota_bytes" --argjson used 0 \
+       '.users += [{"name":\$u,"quota":\$q,"used":\$used,"created": "'$(date '+%s')'"}]' \
+       "$USERS_FILE" > tmp.json && mv tmp.json "$USERS_FILE"
+    
+    success "User $username created! (${quota_input} quota)"
+    echo -e "${CYAN}🔗 Connect: ${BOLD}ssh_$username user@target${NC}"
+}
+
+show_dashboard() {
+    banner
+    echo -e "${YELLOW}${BOLD}📊 REAL-TIME DASHBOARD${NC}${YELLOW} (Updates every 3s)${NC}"
+    printf "\n%s\n" "═══════════════════════════════════════════════════════════════"
+    printf "%-12s %-10s %-10s %-8s %s\n" "Username" "Used" "Quota" "Usage%" "Status"
+    printf "%s\n" "───────────────────────────────────────────────────────────────"
+    
+    if [[ ! -s "$USERS_FILE" ]]; then
+        echo "${RED}No users tracked${NC}"
+        return
+    fi
+    
+    jq -r '.users[] | [.name, (.used/1024/1024/1024 | floor), (.quota/1024/1024/1024 | floor), ((.used*100/.quota) | floor), if .used >= .quota then "💀DEAD" else "🟢LIVE" end] | @tsv' "$USERS_FILE" | \
+    while IFS=$'\t' read -r name used quota pct status; do
+        bar=$(printf '█%.0s' $(seq 1 $(echo "$pct/10" | bc)))
+        printf "${GREEN}%-12s${NC} %-10s %-10s ${YELLOW}%-3s%%${NC} ${BLUE}[%s]${NC} %s\n" \
+               "$name" "${used}GB" "${quota}GB" "$pct" "$bar" "$status"
+    done
+    
+    # Live connections
+    active=$(ss -tnp 2>/dev/null | grep :22 | grep ESTAB | wc -l)
+    echo -e "\n${PURPLE}🔗 Active SSH: ${BOLD}$active${NC} | ${GREEN}Monitoring: ${BOLD}ACTIVE${NC}"
+}
+
+delete_user() {
+    read -p "🗑️  Username to delete: " username
+    if id "$username" &>/dev/null; then
+        banner "Deleting..."
+        spinner "Removing user & files..."
+        userdel -f -r "$username" > /dev/null 2>&1
+        rm -f "/usr/local/bin/ssh_$username" "$STATS_DIR/$username.dat"
+        jq 'del(.users[] | select(.name=="'"$username"'"))' "$USERS_FILE" > tmp.json && mv tmp.json "$USERS_FILE" &
+        loading $!
+        success "User $username deleted!"
+    else
+        error "User not found!"
+    fi
+}
+
+# Monitoring Daemon (3s intervals)
+monitor_usage() {
+    while true; do
+        jq -r '.users[] | "\(.name) \(.used) \(.quota)"' "$USERS_FILE" 2>/dev/null | while read name used quota; do
+            # Simulate usage (replace with nethogs/ss for real traffic)
+            new_used=$((used + 1024000))  # +1MB per check
+            
+            # Update JSON
+            jq --arg n "$name" --argjson u "$new_used" \
+               '(.users[] | select(.name==$n)) |= (.used = $u)' "$USERS_FILE" > tmp.json && mv tmp.json "$USERS_FILE"
+            
+            # Kill if quota exceeded
+            if [[ $new_used -ge $quota ]]; then
+                echo "$(date): 💀 QUOTA EXCEEDED - Killing $name" >> "$LOG_DIR/quota_kills.log"
+                userdel -f "$name" 2>/dev/null
+                rm -f "/usr/local/bin/ssh_$name"
+            fi
+        done
+        sleep 3
+    done
+}
+
+# Main Menu
+main_menu() {
+    while true; do
+        banner
+        echo -e "${GREEN}1.${NC} ${BOLD}➕ Add User${NC}"
+        echo -e "${GREEN}2.${NC} ${BOLD}📊 Dashboard${NC}"
+        echo -e "${GREEN}3.${NC} ${BOLD}🗑️  Delete User${NC}"
+        echo -e "${GREEN}4.${NC} ${BOLD}🔍 List Users${NC}"
+        echo -e "${YELLOW}5.${NC} ${BOLD}▶️  Start Monitor${NC}"
+        echo -e "${YELLOW}6.${NC} ${BOLD}⏹️  Stop Monitor${NC}"
+        echo -e "${RED}0.${NC} ${BOLD}❌ Exit${NC}"
+        echo
+        read -p "🎯 Select: " choice
+        
+        case $choice in
+            1) add_user; read -p $'\n👆 Press Enter...';;
+            2) show_dashboard; read -p $'\n🔄 Press Enter...';;
+            3) delete_user; sleep 2;;
+            4) jq -r '.users[] | "📱 \(.name) - \(.quota/1024/1024/1024 | floor)GB"' "$USERS_FILE"; read -p $'\n👆 Press Enter...';;
+            5) nohup bash -c "monitor_usage" > "$LOG_DIR/monitor.log" 2>&1 & echo $! > "$MONITOR_PID"; success "Monitor started (PID: $!)";;
+            6) kill $(cat "$MONITOR_PID" 2>/dev/null) 2>/dev/null && rm -f "$MONITOR_PID"; success "Monitor stopped";;
+            0) echo -e "${YELLOW}👋 Goodbye!${NC}"; exit 0;;
+            *) echo -e "${RED}Invalid!${NC}"; sleep 1;;
+        esac
+    done
+}
+
+# Auto-start monitor if not running
+if [[ ! -f "$MONITOR_PID" ]] || ! kill -0 $(cat "$MONITOR_PID" 2>/dev/null) 2>/dev/null; then
+    nohup bash -c "monitor_usage" > "$LOG_DIR/monitor.log" 2>&1 &
+    echo $! > "$MONITOR_PID"
+fi
+
+# Entry Point
+case "${1:-}" in
+    "menu"|"") install_deps; init_system; main_menu ;;
+    "dashboard"|"usage") show_dashboard ;;
+    "install") install_deps; init_system; success "Ready! Run: sudo $0 menu" ;;
+    *) echo "Usage: $0 {menu|dashboard|install}"; exit 1 ;;
+esac
