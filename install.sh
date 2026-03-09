@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # SSH Manager Installation Script
 
@@ -15,28 +16,38 @@ fi
 
 # Download the main script
 echo "📥 Downloading SSH Manager..."
-curl -sSL https://raw.githubusercontent.com/iddienine/ssh-manager/main/ssh-quota-manager.sh -o /usr/local/bin/ssh-quota-manager
+curl -sSL https://raw.githubusercontent.com/iddienine/ssh-manager/main/ssh-manager -o /usr/local/bin/ssh-manager
 
 # Make it executable
-chmod +x /usr/local/bin/ssh-quota-manager
+chmod +x /usr/local/bin/ssh-manager
+
+# Add alias for easy access
+echo "🔧 Adding 'menu' command..."
+if ! grep -q "alias menu=" /root/.bashrc 2>/dev/null; then
+    echo "alias menu='sudo /usr/local/bin/ssh-manager'" >> /root/.bashrc
+fi
 
 # Add to .bashrc for auto-display
 echo "🔧 Configuring auto-display..."
-if ! grep -q "ssh-quota-manager" /root/.bashrc; then
-    echo "/usr/local/bin/ssh-quota-manager" >> /root/.bashrc
+if ! grep -q "ssh-manager" /root/.bashrc 2>/dev/null; then
+    echo "/usr/local/bin/ssh-manager" >> /root/.bashrc
 fi
 
 # Create config directory
 mkdir -p /etc/ssh-quotas
 
-# Setup iptables
+# Create log file
+touch /var/log/ssh-quota-monitor.log 2>/dev/null
+
+# Initial setup
 echo "🛡️  Configuring iptables..."
-/usr/local/bin/ssh-quota-manager 2>/dev/null || true
+/usr/local/bin/ssh-manager 2>/dev/null || true
 
 echo -e "${GREEN}✅ Installation complete!${NC}"
 echo ""
 echo "📝 Commands:"
 echo "   menu     - Open interactive manager"
-echo "   sudo ssh-quota-manager monitor - Start monitor daemon"
+echo "   sudo ssh-manager monitor - Start monitor daemon"
+echo "   sudo ssh-manager - Show menu"
 echo ""
 echo "🎯 Type 'menu' to get started!"
